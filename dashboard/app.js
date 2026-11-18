@@ -76,7 +76,8 @@
 
   document.getElementById('masthead-meta').innerHTML =
     '<strong>' + rows.length + '</strong> protocols ranked<br>' +
-    'Snapshot as of ' + esc(D.as_of) + ' &middot; watchlist floor ' + money(D.floor_usd);
+    'Snapshot as of ' + esc(D.as_of) + ' &middot; watchlist floor ' + money(D.floor_usd) + '<br>' +
+    'Dataset: ' + esc(D.source || 'sealed snapshot (source not recorded)');
 
   var mc = D.model_constants || {};
   document.getElementById('model-strip').innerHTML =

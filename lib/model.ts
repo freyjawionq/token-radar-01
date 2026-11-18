@@ -17,10 +17,15 @@
 //   implied_value_usd = round(tvl_usd x ratio x momentum), whole dollars.
 //
 // The board is every watchlist slug plus the highest-TVL remaining
-// pre-token protocols, TARGET_ROWS in all. Rows are ordered by implied
-// value; exact ties are broken by TVL, then slug, and any value that
-// would repeat the previous row's is stepped down one dollar at a time
-// so the ranking is strict. No protocol name is ever special-cased.
+// pre-token protocols, TARGET_ROWS in all. The fill (the non-watchlist
+// rows) skips tokenized representations of another asset — wrapped,
+// bridged and liquid-staked products, see isTokenizedRepresentation —
+// because their TVL is backing for a token that already exists, not a
+// protocol awaiting one. The watchlist is exempt: its slugs are always
+// on the board. Rows are ordered by implied value; exact ties are
+// broken by TVL, then slug, and any value that would repeat the
+// previous row's is stepped down one dollar at a time so the ranking
+// is strict. No protocol name is ever special-cased.
 
 /** One protocol record: exactly the ten fields the sealed snapshot carries. */
 export interface SnapshotProtocol {
@@ -96,6 +101,7 @@ export interface BoardRow {
 /** The dashboard's dataset, written to data.js as window.BOARD_DATA. */
 export interface BoardData {
   as_of: string;
+  source: string;
   floor_usd: number;
   model_name: string;
   model_constants: typeof MODEL;
@@ -124,6 +130,57 @@ function median(values: number[]): number {
 /** A protocol records no token when both token identifiers are absent. */
 export function isPreToken(p: SnapshotProtocol): boolean {
   return p.gecko_id === null && p.symbol === null;
+}
+
+/**
+ * Fill exclusion: is this entry a tokenized representation of another
+ * asset — a wrapped, bridged or liquid-staked product — rather than a
+ * standalone protocol that has yet to issue a token? Decided only from
+ * the snapshot's own fields (category, name, slug); no slug is listed
+ * and no rank or value is consulted.
+ *
+ * An entry counts as a representation when ANY of these holds:
+ *   1. Its category is a bridge category ('Bridge', 'Canonical
+ *      Bridge', 'Cross Chain Bridge'). A bridge entry's TVL is
+ *      collateral locked against wrapped copies of other chains'
+ *      assets minted elsewhere, so the entry measures custody of
+ *      assets that already have tokens, not a protocol awaiting one.
+ *   2. Its category is a liquid receipt category ('Liquid Staking',
+ *      'Liquid Restaking') or names a representation product outright
+ *      ('Stablecoin Wrapper', 'Anchor BTC', 'Restaked BTC',
+ *      'Decentralized BTC'). These products are defined by the liquid
+ *      token they issue against staked, restaked or wrapped assets;
+ *      their TVL is that token's backing.
+ *   3. Its name or slug carries the word 'wrapped' or 'staked' (a slug
+ *      segment or a whole word in the name), whatever its category:
+ *      the entry's own label says its product is a wrapped or staked
+ *      representation of another asset.
+ *
+ * Deliberate boundary: 'Staking Pool' and 'Restaking' entries stay
+ * fill-eligible. They operate staking infrastructure and record no
+ * liquid receipt token as their product, so they are protocols in the
+ * board's sense. The exclusion applies to the fill only; buildBoard
+ * never applies it to watchlist slugs.
+ */
+const REPRESENTATION_CATEGORIES: ReadonlySet<string> = new Set([
+  'bridge',
+  'canonical bridge',
+  'cross chain bridge',
+  'liquid staking',
+  'liquid restaking',
+  'stablecoin wrapper',
+  'anchor btc',
+  'restaked btc',
+  'decentralized btc',
+]);
+
+const REPRESENTATION_NAME = /\b(?:wrapped|staked)\b/i;
+const REPRESENTATION_SLUG = /(?:^|-)(?:wrapped|staked)(?:-|$)/;
+
+export function isTokenizedRepresentation(p: SnapshotProtocol): boolean {
+  const category = (p.category ?? '').trim().toLowerCase();
+  if (REPRESENTATION_CATEGORIES.has(category)) return true;
+  return REPRESENTATION_NAME.test(p.name) || REPRESENTATION_SLUG.test(p.slug);
 }
 
 /** Whole days between the day DefiLlama began tracking a protocol and the snapshot date. */
@@ -211,6 +268,10 @@ function scoreRow(p: SnapshotProtocol, snapshot: Snapshot, table: RatioTable, on
 /**
  * The board: every watchlist slug, then the highest-TVL pre-token protocols
  * outside the watchlist until TARGET_ROWS rows, ranked by implied value.
+ * The fill skips tokenized representations (isTokenizedRepresentation):
+ * a wrapped, bridged or liquid-staked product's TVL backs a token that
+ * already exists, so it is not a pre-token protocol in the board's sense.
+ * Watchlist slugs are chosen first and are never excluded.
  */
 export function buildBoard(snapshot: Snapshot): BoardRow[] {
   const table = ratioTable(snapshot);
@@ -221,7 +282,7 @@ export function buildBoard(snapshot: Snapshot): BoardRow[] {
     if (p !== undefined) chosen.set(slug, p);
   }
   const early = snapshot.protocols
-    .filter((p) => !chosen.has(p.slug) && isPreToken(p))
+    .filter((p) => !chosen.has(p.slug) && isPreToken(p) && !isTokenizedRepresentation(p))
     .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : 1));
   for (const p of early) {
     if (chosen.size >= MODEL.targetRows) break;
@@ -251,6 +312,7 @@ export function buildData(snapshot: Snapshot, board: BoardRow[]): BoardData {
   const table = ratioTable(snapshot);
   return {
     as_of: snapshot.as_of,
+    source: snapshot.source,
     floor_usd: snapshot.floor_usd,
     model_name: MODEL_NAME,
     model_constants: MODEL,

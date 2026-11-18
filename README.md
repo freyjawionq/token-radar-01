@@ -31,6 +31,34 @@ null) up to 140 rows. Rows sort by implied value descending; exact ties
 break by TVL, then slug; a value that would repeat the previous row's is
 stepped down $1 at a time so the ranking is strict.
 
+**Fill exclusion (tokenized representations).** The fill — never the
+watchlist — skips products that are tokenized representations of another
+asset: their TVL is backing for a token that already exists, not a
+protocol awaiting one. The rule reads only the snapshot's own fields
+(`isTokenizedRepresentation` in `lib/model.ts`); no slug is listed and no
+rank or value is consulted. An entry is excluded when any of these holds:
+
+- its category is a bridge category (`Bridge`, `Canonical Bridge`,
+  `Cross Chain Bridge`) — a bridge entry's TVL is collateral locked
+  against wrapped copies of other chains' assets;
+- its category is a liquid receipt or representation category (`Liquid
+  Staking`, `Liquid Restaking`, `Stablecoin Wrapper`, `Anchor BTC`,
+  `Restaked BTC`, `Decentralized BTC`) — the product is defined by the
+  liquid token it issues against staked, restaked or wrapped assets;
+- its name or slug carries the word `wrapped` or `staked`, whatever its
+  category.
+
+`Staking Pool` and `Restaking` entries stay eligible: they operate
+staking infrastructure and record no liquid receipt token as their
+product. On this snapshot the rule excludes 92 of the 302 fill
+candidates (WBTC, USDT0 and Binance staked ETH among them) and the fill
+takes the next eligible protocols instead; all 40 watchlist rows stay,
+including any that match the pattern.
+
+**Dataset citation.** `board.json` carries the snapshot's `source` and
+`as_of` at the top level beside the rows, and the dashboard masthead
+cites the same dataset source and as-of date from `data.js`.
+
 **Farm plans.** Five text steps per row, templated from the protocol's
 category (lending, DEX, staking, bridge, yield, derivatives, RWA, CEX,
 generic) and its chains: wallet preparation, the core product action, a
@@ -72,11 +100,11 @@ program write identical bytes.
 
 - Team review gate (JEMBOER → MUSE → kontolchina) before any submission;
   no submission is authorized by this draft.
-- Review question for the gate: the board fill follows the assignment
-  literally (highest-TVL remaining pre-token protocols), which puts
-  wrapped/bridged products of already-trading tokens (e.g. WBTC, USDT0)
-  at the top by TVL. The watchlist itself excludes such products; decide
-  whether the fill should apply the same exclusions.
+- The gate's fill question is answered in this fix round: the fill now
+  excludes tokenized representations of another asset under the
+  documented, rule-based classifier above (watchlist exempt). The fix
+  itself still goes through the same team review gate before any
+  submission.
 - Consider whether the model should also state an age/maturity term (the
   snapshot's `listed_at`) — the current formula is the assigned design
   (category multiple x momentum) and states age only as a displayed fact.

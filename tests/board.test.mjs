@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { isTokenizedRepresentation } from '../lib/model.ts';
 
 const repo = fileURLToPath(new URL('..', import.meta.url));
 const snapshotPath =
@@ -22,7 +23,7 @@ const snapshotPath =
 function runProgram() {
   const out = mkdtempSync(join(tmpdir(), 'token-radar-test-'));
   try {
-    execFileSync('/usr/bin/node', ['main.ts', '--input', snapshotPath], {
+    execFileSync(process.execPath, ['main.ts', '--input', snapshotPath], {
       cwd: repo,
       env: { ...process.env, MAKEFUN_OUTPUT_DIR: out },
       stdio: 'pipe',
@@ -98,4 +99,59 @@ test('the run also wrote the dashboard data and a dossier', () => {
   assert.ok(data.startsWith('window.BOARD_DATA='), 'data.js carries window.BOARD_DATA');
   const dossier = JSON.parse(readFileSync(join(out, 'dossier.json'), 'utf8'));
   assert.ok(dossier !== null && typeof dossier === 'object', 'dossier.json parses');
+});
+
+test('board.json and the dashboard data cite the dataset source and as-of date', () => {
+  assert.equal(board.source, snapshot.source, 'board.json source differs from the snapshot source');
+  assert.equal(board.as_of, snapshot.as_of, 'board.json as_of differs from the snapshot as_of');
+  const text = readFileSync(join(out, 'data.js'), 'utf8');
+  const data = JSON.parse(text.slice('window.BOARD_DATA='.length).replace(/;\s*$/, ''));
+  assert.equal(data.source, snapshot.source, 'data.js source differs from the snapshot source');
+  assert.equal(data.as_of, snapshot.as_of, 'data.js as_of differs from the snapshot as_of');
+});
+
+const bySlug = new Map(snapshot.protocols.map((p) => [p.slug, p]));
+
+test('classifier: wrapped, bridged and staked representation products are marked', () => {
+  for (const slug of ['wbtc', 'usdt0', 'binance-staked-eth']) {
+    assert.ok(isTokenizedRepresentation(bySlug.get(slug)), `${slug} should be a tokenized representation`);
+  }
+  // The name/slug marker applies in any category, not just the named ones.
+  const wrapped = {
+    slug: 'acme-wrapped-ether', name: 'Acme Wrapped Ether', category: 'Yield',
+    chains: ['Ethereum'], tvl_usd: 1, change_7d: null, mcap_usd: null,
+    listed_at: null, gecko_id: null, symbol: null,
+  };
+  assert.ok(isTokenizedRepresentation(wrapped), 'a wrapped marker should mark a representation in any category');
+});
+
+test('classifier: plain protocols are not marked', () => {
+  assert.ok(!isTokenizedRepresentation(bySlug.get('bybit')), 'bybit is a plain protocol');
+  const aaveLike = {
+    slug: 'aave', name: 'Aave', category: 'Lending',
+    chains: ['Ethereum'], tvl_usd: 1, change_7d: null, mcap_usd: null,
+    listed_at: null, gecko_id: null, symbol: null,
+  };
+  assert.ok(!isTokenizedRepresentation(aaveLike), 'a plain lending protocol should not be marked');
+});
+
+test('fill excludes tokenized representations; the watchlist is exempt', () => {
+  const slugs = new Set(rows.map((r) => r.slug));
+  for (const slug of ['wbtc', 'usdt0', 'binance-staked-eth']) {
+    assert.ok(!slugs.has(slug), `${slug} is a representation product and must not enter through the fill`);
+  }
+  for (const r of rows) {
+    if (r.on_watchlist) continue;
+    assert.ok(
+      !isTokenizedRepresentation(bySlug.get(r.slug)),
+      `fill row ${r.slug} is a tokenized representation`,
+    );
+  }
+  assert.ok(slugs.has('bybit'), 'plain protocol bybit should enter through the fill');
+  const saturn = rows.find((r) => r.slug === 'saturn');
+  assert.ok(
+    saturn !== undefined && saturn.on_watchlist && isTokenizedRepresentation(bySlug.get('saturn')),
+    'watchlist entry saturn matches the representation pattern (Stablecoin Wrapper) and stays on the board',
+  );
+  assert.equal(rows.length, 140, 'the board still fills to the target size on this snapshot');
 });

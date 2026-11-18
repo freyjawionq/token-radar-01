@@ -3,7 +3,7 @@
 // Reads the sealed snapshot (--input <file|dir>, default /input/snapshot.json),
 // builds the ranked board with lib/model.ts, and writes the hand-in into the
 // output directory (--output <dir>, else $MAKEFUN_OUTPUT_DIR, else /output):
-//   board.json    the ranked board, {"rows": [...]}
+//   board.json    the ranked board, {"source": ..., "as_of": ..., "rows": [...]}
 //   data.js       the dashboard's dataset (window.BOARD_DATA), beside the page
 //   dashboard/    a copy of this repository's dashboard/
 //   screenshots/  a copy of this repository's screenshots/
@@ -51,7 +51,12 @@ if (issue !== null) fail(`the model built a board the gate refuses: ${issue}`);
 const data = buildData(snapshot, board);
 
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board }, null, 1)}\n`);
+// board.json cites the dataset it was built from: the snapshot's own
+// source and as-of date ride at the top level, beside the rows.
+writeFileSync(
+  join(out, 'board.json'),
+  `${JSON.stringify({ source: snapshot.source, as_of: snapshot.as_of, rows: board }, null, 1)}\n`,
+);
 writeFileSync(join(out, 'data.js'), dataScript(data));
 
 /** Copy a directory's regular files into the output, skipping dot names; returns the names copied. */
