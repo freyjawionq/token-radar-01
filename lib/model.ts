@@ -14,7 +14,14 @@
 //      is clamped to [CHANGE_FLOOR, CHANGE_CAP] percent and scaled by
 //      MOMENTUM_WEIGHT, so one hot week moves the value mildly, never
 //      wildly. An unreported change counts as zero (factor exactly 1).
-//   implied_value_usd = round(tvl_usd x ratio x momentum), whole dollars.
+//   4. A maturity factor rewards how long the protocol has run with no
+//      token: it grows linearly with the age in days since the snapshot
+//      first tracked the protocol (listed_at), from 1 at listing to
+//      1 + AGE_WEIGHT at AGE_CAP_DAYS, and stays at the cap beyond it.
+//      An unrecorded listing date counts as no evidence either way
+//      (factor exactly 1), the same neutrality as an unreported change.
+//   implied_value_usd = round(tvl_usd x ratio x momentum x maturity),
+//   whole dollars.
 //
 // The board is every watchlist slug plus the highest-TVL remaining
 // pre-token protocols, TARGET_ROWS in all. The fill (the non-watchlist
@@ -59,13 +66,17 @@ export const MODEL = {
   changeCap: 100,
   /** How much of the clamped change becomes a value factor: 1 + change/100 x weight. */
   momentumWeight: 0.35,
+  /** Most the maturity factor can add: 1 + weight at the age cap. */
+  ageWeight: 0.5,
+  /** Age in days at which the maturity factor reaches its cap (four years). */
+  ageCapDays: 1460,
   /** Board size: the 40 watchlist slugs plus the strongest early finds. */
-  targetRows: 140,
+  targetRows: 200,
   /** Gate cap on one row's implied value. */
   maxValue: 100_000_000_000_000,
 } as const;
 
-export const MODEL_NAME = 'category-median multiple x 7d momentum';
+export const MODEL_NAME = 'category-median multiple x 7d momentum x age maturity';
 
 /** The observed multiples: a median per category plus one global median. */
 export interface RatioTable {
@@ -94,6 +105,7 @@ export interface BoardRow {
     ratio_peers: number;
     momentum_factor: number;
     change_clamped_pct: number;
+    age_factor: number;
   };
   farm_steps: string[];
 }
@@ -136,15 +148,21 @@ export function isPreToken(p: SnapshotProtocol): boolean {
  * Fill exclusion: is this entry a tokenized representation of another
  * asset — a wrapped, bridged or liquid-staked product — rather than a
  * standalone protocol that has yet to issue a token? Decided only from
- * the snapshot's own fields (category, name, slug); no slug is listed
- * and no rank or value is consulted.
+ * the snapshot's own fields; no slug is listed and no rank or value is
+ * consulted. A bridge category BY ITSELF is not evidence: the snapshot's
+ * bridge categories hold both asset products (a wrapped Bitcoin issued
+ * by an exchange) and bridge protocols proper (services that move other
+ * people's assets and have yet to issue a token of their own — in this
+ * snapshot e.g. Coinbase Bridge, Base Bridge, CCIP, Aster Bridge and
+ * Circle Gateway, all with no token recorded). Only the protocol rows
+ * belong on a pre-token board, so a bridge entry is excluded only when
+ * a signal below identifies the entry itself as the asset product.
  *
  * An entry counts as a representation when ANY of these holds:
- *   1. Its category is a bridge category ('Bridge', 'Canonical
- *      Bridge', 'Cross Chain Bridge'). A bridge entry's TVL is
- *      collateral locked against wrapped copies of other chains'
- *      assets minted elsewhere, so the entry measures custody of
- *      assets that already have tokens, not a protocol awaiting one.
+ *   1. It already records a traded token (gecko_id or symbol present).
+ *      Whatever else it is, it is not a protocol awaiting a token.
+ *      (buildBoard's fill only ever sees pre-token rows, so this signal
+ *      completes the classifier rather than changing the fill.)
  *   2. Its category is a liquid receipt category ('Liquid Staking',
  *      'Liquid Restaking') or names a representation product outright
  *      ('Stablecoin Wrapper', 'Anchor BTC', 'Restaked BTC',
@@ -155,6 +173,16 @@ export function isPreToken(p: SnapshotProtocol): boolean {
  *      segment or a whole word in the name), whatever its category:
  *      the entry's own label says its product is a wrapped or staked
  *      representation of another asset.
+ *   4. It sits in a bridge category ('Bridge', 'Canonical Bridge',
+ *      'Cross Chain Bridge') AND its name or slug identifies the asset
+ *      it carries rather than a service: the word 'Bitcoin', a BTC or
+ *      USDT token in the name, or a slug segment that is, ends with, or
+ *      (for USDT) begins with that asset's ticker — the form bridged
+ *      tickers take (wbtc, tzbtc, sbtc, fbtc, usdt0, ...). In this
+ *      snapshot every bridge-category entry whose label names an asset
+ *      names Bitcoin/BTC or USDT, and those entries are the wrapped
+ *      products of exchanges and custodians; bridge entries whose
+ *      label names a service or a network stay eligible.
  *
  * Deliberate boundary: 'Staking Pool' and 'Restaking' entries stay
  * fill-eligible. They operate staking infrastructure and record no
@@ -162,10 +190,7 @@ export function isPreToken(p: SnapshotProtocol): boolean {
  * board's sense. The exclusion applies to the fill only; buildBoard
  * never applies it to watchlist slugs.
  */
-const REPRESENTATION_CATEGORIES: ReadonlySet<string> = new Set([
-  'bridge',
-  'canonical bridge',
-  'cross chain bridge',
+const RECEIPT_CATEGORIES: ReadonlySet<string> = new Set([
   'liquid staking',
   'liquid restaking',
   'stablecoin wrapper',
@@ -174,13 +199,31 @@ const REPRESENTATION_CATEGORIES: ReadonlySet<string> = new Set([
   'decentralized btc',
 ]);
 
+const BRIDGE_CATEGORIES: ReadonlySet<string> = new Set(['bridge', 'canonical bridge', 'cross chain bridge']);
+
 const REPRESENTATION_NAME = /\b(?:wrapped|staked)\b/i;
 const REPRESENTATION_SLUG = /(?:^|-)(?:wrapped|staked)(?:-|$)/;
 
+/** Does a bridge entry's name or slug name the asset it carries (Bitcoin/BTC, USDT) rather than a service? */
+function namesCarriedAsset(p: SnapshotProtocol): boolean {
+  if (/\bbitcoin\b/i.test(p.name)) return true;
+  for (const token of p.name.toUpperCase().split(/[^A-Z0-9]+/)) {
+    if (token === 'BTC' || token === 'USDT') return true;
+  }
+  for (const segment of p.slug.split('-')) {
+    if (segment === 'btc' || segment === 'usdt') return true;
+    if (segment.length > 3 && segment.endsWith('btc')) return true;
+    if (segment.length > 4 && segment.startsWith('usdt')) return true;
+  }
+  return false;
+}
+
 export function isTokenizedRepresentation(p: SnapshotProtocol): boolean {
+  if (p.gecko_id !== null || p.symbol !== null) return true;
   const category = (p.category ?? '').trim().toLowerCase();
-  if (REPRESENTATION_CATEGORIES.has(category)) return true;
-  return REPRESENTATION_NAME.test(p.name) || REPRESENTATION_SLUG.test(p.slug);
+  if (RECEIPT_CATEGORIES.has(category)) return true;
+  if (REPRESENTATION_NAME.test(p.name) || REPRESENTATION_SLUG.test(p.slug)) return true;
+  return BRIDGE_CATEGORIES.has(category) && namesCarriedAsset(p);
 }
 
 /** Whole days between the day DefiLlama began tracking a protocol and the snapshot date. */
@@ -235,13 +278,27 @@ export function momentumFor(change7d: number | null): { factor: number; clamped:
   return { factor: 1 + (clamped / 100) * MODEL.momentumWeight, clamped };
 }
 
+/**
+ * The maturity factor from a protocol's age in days: 1 + AGE_WEIGHT x
+ * min(age, AGE_CAP_DAYS) / AGE_CAP_DAYS — a linear ramp from 1 at listing
+ * to 1 + AGE_WEIGHT at the cap, flat beyond it. An unrecorded age (the
+ * snapshot carries no listed_at) is neutral: factor exactly 1.
+ */
+export function ageFactorFor(age: number | null): number {
+  if (age === null) return 1;
+  const capped = Math.min(Math.max(0, age), MODEL.ageCapDays);
+  return 1 + (capped / MODEL.ageCapDays) * MODEL.ageWeight;
+}
+
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 
 /** Score one pre-token protocol: the full row except its rank. */
 function scoreRow(p: SnapshotProtocol, snapshot: Snapshot, table: RatioTable, onWatchlist: boolean): Omit<BoardRow, 'rank'> {
   const { ratio, basis, peers } = ratioFor(p, table);
   const { factor, clamped } = momentumFor(p.change_7d);
-  const raw = p.tvl_usd * ratio * factor;
+  const age = ageDays(snapshot.as_of, p.listed_at);
+  const ageFactor = ageFactorFor(age);
+  const raw = p.tvl_usd * ratio * factor * ageFactor;
   const value = Math.min(MODEL.maxValue, Math.max(1, Math.round(raw)));
   return {
     slug: p.slug,
@@ -251,7 +308,7 @@ function scoreRow(p: SnapshotProtocol, snapshot: Snapshot, table: RatioTable, on
     tvl_usd: p.tvl_usd,
     change_7d: p.change_7d,
     listed_at: p.listed_at,
-    age_days: ageDays(snapshot.as_of, p.listed_at),
+    age_days: age,
     on_watchlist: onWatchlist,
     implied_value_usd: value,
     model: {
@@ -260,6 +317,7 @@ function scoreRow(p: SnapshotProtocol, snapshot: Snapshot, table: RatioTable, on
       ratio_peers: peers,
       momentum_factor: round4(factor),
       change_clamped_pct: clamped,
+      age_factor: round4(ageFactor),
     },
     farm_steps: farmSteps(p),
   };

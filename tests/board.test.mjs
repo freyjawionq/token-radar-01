@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { isTokenizedRepresentation } from '../lib/model.ts';
+import { ageFactorFor, buildBoard, isTokenizedRepresentation } from '../lib/model.ts';
 
 const repo = fileURLToPath(new URL('..', import.meta.url));
 const snapshotPath =
@@ -125,6 +125,22 @@ test('classifier: wrapped, bridged and staked representation products are marked
   assert.ok(isTokenizedRepresentation(wrapped), 'a wrapped marker should mark a representation in any category');
 });
 
+test('classifier: bridge protocols without representation evidence are not marked', () => {
+  // A bridge category alone is not evidence: these entries name a service
+  // or a network, record no token, and carry no wrapped/staked or
+  // carried-asset marker, so they stay fill-eligible.
+  for (const slug of ['ccip', 'base-bridge', 'coinbase-bridge', 'aster-bridge', 'circle-gateway']) {
+    assert.ok(!isTokenizedRepresentation(bySlug.get(slug)), `${slug} is a bridge protocol, not an asset product`);
+  }
+});
+
+test('bridge protocols enter through the fill', () => {
+  const fill = new Set(rows.filter((r) => !r.on_watchlist).map((r) => r.slug));
+  for (const slug of ['ccip', 'base-bridge', 'coinbase-bridge']) {
+    assert.ok(fill.has(slug), `bridge protocol ${slug} should be on the board through the fill`);
+  }
+});
+
 test('classifier: plain protocols are not marked', () => {
   assert.ok(!isTokenizedRepresentation(bySlug.get('bybit')), 'bybit is a plain protocol');
   const aaveLike = {
@@ -153,5 +169,49 @@ test('fill excludes tokenized representations; the watchlist is exempt', () => {
     saturn !== undefined && saturn.on_watchlist && isTokenizedRepresentation(bySlug.get('saturn')),
     'watchlist entry saturn matches the representation pattern (Stablecoin Wrapper) and stays on the board',
   );
-  assert.equal(rows.length, 140, 'the board still fills to the target size on this snapshot');
+  assert.equal(rows.length, 200, 'the board still fills to the target size on this snapshot');
+});
+
+test('age factor: a bounded ramp from the listing age, neutral when unrecorded', () => {
+  assert.equal(ageFactorFor(null), 1, 'unrecorded age is neutral');
+  assert.equal(ageFactorFor(0), 1, 'a just-listed protocol gets no maturity premium');
+  assert.equal(ageFactorFor(730), 1.25, 'half the cap age earns half the weight');
+  assert.equal(ageFactorFor(1460), 1.5, 'the factor caps at 1 + weight');
+  assert.equal(ageFactorFor(100000), 1.5, 'ages past the cap stay at the cap');
+});
+
+test('age term: at equal TVL, multiple and momentum, older outvalues younger; unrecorded age is neutral', () => {
+  const peer = (slug) => ({
+    slug, name: slug, category: 'Lending', chains: ['Ethereum'], tvl_usd: 100,
+    change_7d: null, mcap_usd: 200, listed_at: null, gecko_id: `g-${slug}`, symbol: 'P',
+  });
+  const candidate = (slug, listed_at) => ({
+    slug, name: slug, category: 'Lending', chains: ['Ethereum'], tvl_usd: 1000,
+    change_7d: 0, mcap_usd: null, listed_at, gecko_id: null, symbol: null,
+  });
+  const synthetic = {
+    as_of: '2026-11-14', source: 'synthetic test snapshot', floor_usd: 1,
+    protocols: [
+      peer('peer-1'), peer('peer-2'), peer('peer-3'),
+      candidate('old-proto', '2022-11-14'),
+      candidate('young-proto', '2026-11-13'),
+      candidate('undated-proto', null),
+    ],
+    watchlist: [],
+  };
+  const board = buildBoard(synthetic);
+  const bySlugSynthetic = new Map(board.map((r) => [r.slug, r]));
+  const old = bySlugSynthetic.get('old-proto');
+  const young = bySlugSynthetic.get('young-proto');
+  const undated = bySlugSynthetic.get('undated-proto');
+  // Every candidate is priced at the same 2.0x category multiple and a
+  // momentum of exactly 1, so only the age term separates them.
+  assert.equal(undated.model.age_factor, 1, 'unrecorded age earns a neutral factor');
+  assert.equal(undated.implied_value_usd, 2000, 'unrecorded age: value is TVL x multiple x momentum alone');
+  assert.equal(old.model.age_factor, 1.5, 'an age past the cap earns the full weight');
+  assert.equal(old.implied_value_usd, 3000, 'oldest: value is TVL x multiple x momentum x 1.5');
+  assert.ok(young.model.age_factor > 1 && young.model.age_factor < 1.5, 'a young protocol earns a small premium');
+  assert.ok(old.implied_value_usd > young.implied_value_usd, 'older outvalues younger at equal inputs');
+  assert.ok(young.implied_value_usd > undated.implied_value_usd, 'any recorded age outvalues an unrecorded one');
+  for (const r of board) assert.ok(r.implied_value_usd > 0, `${r.slug} value stays positive`);
 });

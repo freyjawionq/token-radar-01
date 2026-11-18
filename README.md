@@ -17,17 +17,26 @@ snapshot's own figures — no protocol name is ever special-cased:
    grouped by the snapshot's `category`; a category with at least 3 such
    peers contributes its **median** ratio. Categories thinner than that —
    and protocols in them — fall back to the **global median** across all
-   categories (0.205x on this snapshot, from 129 observed multiples).
+   categories. The median is computed at runtime and printed in `data.js`
+   as `global_median_ratio`; on this snapshot it is 0.2138x, from 128
+   observed multiples.
 2. **Base value.** `base = tvl_usd x ratio` for the protocol's category.
 3. **Momentum.** The 7-day TVL change is clamped to [-50%, +100%] and
    scaled mildly: `momentum = 1 + clamped/100 x 0.35` (range 0.825–1.35).
    An unreported change counts as zero (factor exactly 1).
-4. **Implied value.** `implied_value_usd = round(tvl_usd x ratio x
-   momentum)`, whole dollars, at least $1, at most $100,000,000,000,000.
+4. **Maturity.** How long the protocol has run with no token:
+   `maturity = 1 + 0.5 x min(age_days, 1460) / 1460`, where `age_days`
+   counts from the snapshot's `listed_at` to its `as_of` date. A protocol
+   tracked for four years or more earns the full +50%; a younger one
+   earns proportionally less; an unrecorded listing date is neutral
+   (factor exactly 1), the same neutrality as an unreported change.
+5. **Implied value.** `implied_value_usd = round(tvl_usd x ratio x
+   momentum x maturity)`, whole dollars, at least $1, at most
+   $100,000,000,000,000.
 
 **Board composition.** Every one of the 40 watchlist slugs, plus the
 highest-TVL remaining pre-token protocols (both `gecko_id` and `symbol`
-null) up to 140 rows. Rows sort by implied value descending; exact ties
+null) up to 200 rows. Rows sort by implied value descending; exact ties
 break by TVL, then slug; a value that would repeat the previous row's is
 stepped down $1 at a time so the ranking is strict.
 
@@ -38,22 +47,37 @@ protocol awaiting one. The rule reads only the snapshot's own fields
 (`isTokenizedRepresentation` in `lib/model.ts`); no slug is listed and no
 rank or value is consulted. An entry is excluded when any of these holds:
 
-- its category is a bridge category (`Bridge`, `Canonical Bridge`,
-  `Cross Chain Bridge`) — a bridge entry's TVL is collateral locked
-  against wrapped copies of other chains' assets;
+- it already records a traded token (`gecko_id` or `symbol` present) —
+  whatever else it is, it is not a protocol awaiting a token;
 - its category is a liquid receipt or representation category (`Liquid
   Staking`, `Liquid Restaking`, `Stablecoin Wrapper`, `Anchor BTC`,
   `Restaked BTC`, `Decentralized BTC`) — the product is defined by the
   liquid token it issues against staked, restaked or wrapped assets;
 - its name or slug carries the word `wrapped` or `staked`, whatever its
-  category.
+  category;
+- it sits in a bridge category (`Bridge`, `Canonical Bridge`,
+  `Cross Chain Bridge`) **and** its name or slug names the asset it
+  carries rather than a service: the word `Bitcoin`, a `BTC` or `USDT`
+  token in the name, or a slug segment that is, ends with, or (for USDT)
+  begins with that asset's ticker — the form bridged tickers take
+  (`wbtc`, `tzbtc`, `sbtc`, `fbtc`, `usdt0`, ...).
+
+A bridge category **alone** does not exclude. The snapshot's bridge
+categories hold both asset products and bridge protocols proper —
+services that move other people's assets and have yet to issue a token
+of their own. Every bridge entry whose label names an asset names
+Bitcoin/BTC or USDT, and those are the wrapped products of exchanges
+and custodians (WBTC, USDT0, Binance Bitcoin, Function FBTC, Stacks
+sBTC among them); bridge entries whose label names a service or a
+network — Coinbase Bridge, Base Bridge, CCIP, Aster Bridge, Circle
+Gateway in this snapshot — are protocols in the board's sense and enter
+the fill.
 
 `Staking Pool` and `Restaking` entries stay eligible: they operate
 staking infrastructure and record no liquid receipt token as their
-product. On this snapshot the rule excludes 92 of the 302 fill
-candidates (WBTC, USDT0 and Binance staked ETH among them) and the fill
-takes the next eligible protocols instead; all 40 watchlist rows stay,
-including any that match the pattern.
+product. On this snapshot the rule excludes 62 of the 302 fill
+candidates and the fill takes the next eligible protocols instead; all
+40 watchlist rows stay, including any that match the pattern.
 
 **Dataset citation.** `board.json` carries the snapshot's `source` and
 `as_of` at the top level beside the rows, and the dashboard masthead
@@ -105,8 +129,14 @@ program write identical bytes.
   documented, rule-based classifier above (watchlist exempt). The fix
   itself still goes through the same team review gate before any
   submission.
-- Consider whether the model should also state an age/maturity term (the
-  snapshot's `listed_at`) — the current formula is the assigned design
-  (category multiple x momentum) and states age only as a displayed fact.
+- The review's age/maturity ask is implemented in this round: implied
+  value now carries the bounded maturity factor documented above
+  (weight 0.5, cap 1460 days, neutral when `listed_at` is unrecorded),
+  and each row's `model.age_factor` states the factor it was priced
+  with.
+- The board is widened from 140 to 200 rows (40 watchlist + 160 fill),
+  the starter example's size; all gate invariants, two-build
+  determinism and the screenshot/dossier caps were re-verified at the
+  new size.
 - Re-render screenshots if the dashboard changes; keep each under the
   512 KiB cap and the dossier under 1.5 MiB.

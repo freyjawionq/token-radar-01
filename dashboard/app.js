@@ -81,8 +81,10 @@
 
   var mc = D.model_constants || {};
   document.getElementById('model-strip').innerHTML =
-    'Model: <code>implied = TVL x category median mcap/TVL x momentum</code> ' +
+    'Model: <code>implied = TVL x category median mcap/TVL x momentum x maturity</code> ' +
     'Momentum clamps the 7d TVL change to [' + mc.changeFloor + '%, +' + mc.changeCap + '%] and scales it by ' + mc.momentumWeight +
+    '. Maturity rewards time tracked with no token: up to +' + Math.round(mc.ageWeight * 100) + '% at ' + (mc.ageCapDays / 365) +
+    ' years, scaled linearly by age, and exactly 1 when no listing date is recorded' +
     '. A category speaks for itself with at least ' + mc.minPeers + ' token peers; otherwise the global median multiple (' +
     Number(D.global_median_ratio).toFixed(3) + 'x) applies. Click any row for its farm plan and the exact inputs behind its value.';
 
@@ -162,11 +164,12 @@
       fact('7d TVL change', r.change_7d === null ? 'not reported' : r.change_7d.toFixed(1) + '%',
         'clamped to ' + Number(m.change_clamped_pct).toFixed(1) + '% for the model') +
       fact('Momentum factor', Number(m.momentum_factor).toFixed(3) + 'x', '1 + clamped change x ' + mc.momentumWeight) +
+      fact('Maturity factor', Number(m.age_factor).toFixed(3) + 'x', 'time tracked with no token; 1 when unrecorded') +
       fact('Tracked for', age, r.listed_at ? 'first listed ' + r.listed_at : '') +
       '</div>' +
       '<h3>How this value is derived</h3>' +
       '<p>TVL ' + fullMoney(r.tvl_usd) + ' x multiple ' + Number(m.ratio).toFixed(3) + ' (' + esc(basis) + ') x momentum ' +
-      Number(m.momentum_factor).toFixed(3) + ' = ' + fullMoney(r.implied_value_usd) + '. ' +
+      Number(m.momentum_factor).toFixed(3) + ' x maturity ' + Number(m.age_factor).toFixed(3) + ' = ' + fullMoney(r.implied_value_usd) + '. ' +
       'The multiple is what the market currently pays per dollar of TVL for comparable protocols that already record a token.</p>' +
       '<h3>Farm plan</h3>' +
       '<ol class="steps">' + (r.farm_steps || []).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ol>' +
