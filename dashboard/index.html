@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Radar — pre-token protocols ranked by implied value</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="masthead">
+  <div class="masthead-inner">
+    <div>
+      <h1>Token Radar</h1>
+      <p class="tagline">Protocols that record no token yet, ranked by the value a token would carry if their record stayed as it is.</p>
+    </div>
+    <div class="masthead-meta" id="masthead-meta"></div>
+  </div>
+  <div class="model-strip" id="model-strip"></div>
+</header>
+
+<main>
+  <section id="board-view">
+    <div class="controls">
+      <label class="control grow">
+        <span>Search</span>
+        <input id="q" type="search" placeholder="Protocol name or slug" autocomplete="off">
+      </label>
+      <label class="control">
+        <span>Category</span>
+        <select id="cat"></select>
+      </label>
+      <label class="control">
+        <span>Chain</span>
+        <select id="chain"></select>
+      </label>
+      <button id="reset" type="button">Reset</button>
+      <div class="count" id="count"></div>
+    </div>
+
+    <div class="table-wrap">
+      <table id="board">
+        <thead>
+          <tr>
+            <th data-sort="rank" class="num">Rank</th>
+            <th data-sort="name">Protocol</th>
+            <th data-sort="category">Category</th>
+            <th>Chains</th>
+            <th data-sort="tvl" class="num">TVL</th>
+            <th data-sort="change" class="num">7d change</th>
+            <th data-sort="implied" class="num">Implied value</th>
+            <th data-sort="mult" class="num">Implied / TVL</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p class="empty" id="empty" hidden>No protocol matches the current filters.</p>
+    </div>
+  </section>
+
+  <section id="detail-view" hidden>
+    <button id="back" type="button">&larr; Back to the board</button>
+    <div id="detail"></div>
+  </section>
+
+  <footer>
+    <p>Implied value is this entry's own model claim, computed only from the sealed snapshot's figures: a protocol's TVL priced at the median market-cap-to-TVL multiple of comparable protocols that already record a token, adjusted mildly for its seven-day TVL momentum. It is not a prediction that a token will be issued. Farm plans are text guidance for the reader; nothing on this page interacts with any protocol.</p>
+  </footer>
+</main>
+
+<script src="../data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
